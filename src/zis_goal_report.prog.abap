@@ -5,6 +5,29 @@
 *&---------------------------------------------------------------------*
 REPORT zis_goal_report.
 
+CLASS lcl_app DEFINITION.
+  PUBLIC SECTION.
+    DATA: mo_grid   TYPE REF TO cl_gui_alv_grid,
+          mo_custom TYPE REF TO cl_gui_custom_container.
+
+    METHODS:
+      constructor,
+      create_objects,
+      display_alv,
+      refresh_alv,
+      handle_toolbar FOR EVENT toolbar OF cl_gui_alv_grid
+        IMPORTING e_object,
+      handle_user_command FOR EVENT user_command OF cl_gui_alv_grid
+        IMPORTING e_ucomm,
+      handle_data_changed FOR EVENT data_changed OF cl_gui_alv_grid
+        IMPORTING er_data_changed.
+
+  PRIVATE SECTION.
+    METHODS:
+      set_layout RETURNING VALUE(rs_layout) TYPE lvc_s_layo,
+      set_fieldcat RETURNING VALUE(rt_fcat) TYPE lvc_t_fcat.
+ENDCLASS.
+
 CLASS lcl_event_handler DEFINITION.
   PUBLIC SECTION.
     CLASS-METHODS:
@@ -12,9 +35,63 @@ CLASS lcl_event_handler DEFINITION.
         IMPORTING e_salv_function.
 ENDCLASS.
 
-CLASS lcl_event_handler IMPLEMENTATION.
-  METHOD on_user_command.
-    CASE e_salv_function.
+CLASS lcl_app IMPLEMENTATION.
+  METHOD constructor.
+    create_objects( ).
+    display_alv( ).
+  ENDMETHOD.
+
+  METHOD create_objects.
+    CREATE OBJECT mo_custom
+      EXPORTING
+        container_name = 'CONT'.
+
+    CREATE OBJECT mo_grid
+      EXPORTING
+        i_parent = mo_custom.
+
+    SET HANDLER: me->handle_toolbar FOR mo_grid,
+                me->handle_user_command FOR mo_grid,
+                me->handle_data_changed FOR mo_grid.
+  ENDMETHOD.
+
+  METHOD display_alv.
+    DATA: lt_fcat TYPE lvc_t_fcat,
+          ls_layout TYPE lvc_s_layo.
+
+    lt_fcat = set_fieldcat( ).
+    ls_layout = set_layout( ).
+
+    mo_grid->set_table_for_first_display(
+      EXPORTING
+        is_layout                     = ls_layout
+      CHANGING
+        it_outtab                     = gt_data
+        it_fieldcatalog              = lt_fcat
+      EXCEPTIONS
+        invalid_parameter_combination = 1
+        program_error                = 2
+        too_many_lines              = 3
+        OTHERS                      = 4 ).
+  ENDMETHOD.
+
+  METHOD refresh_alv.
+    mo_grid->refresh_table_display( ).
+  ENDMETHOD.
+
+  METHOD handle_toolbar.
+    DATA: ls_toolbar TYPE stb_button.
+
+    CLEAR ls_toolbar.
+    ls_toolbar-function = 'SAVE'.
+    ls_toolbar-icon = icon_system_save.
+    ls_toolbar-quickinfo = 'Save'.
+    ls_toolbar-text = 'Save'.
+    APPEND ls_toolbar TO e_object->mt_toolbar.
+  ENDMETHOD.
+
+  METHOD handle_user_command.
+    CASE e_ucomm.
       WHEN 'SAVE'.
         MODIFY zist_goals FROM TABLE gt_data.
         IF sy-subrc = 0.
@@ -25,17 +102,34 @@ CLASS lcl_event_handler IMPLEMENTATION.
         ENDIF.
     ENDCASE.
   ENDMETHOD.
+
+  METHOD handle_data_changed.
+    DATA: ls_mod_cells TYPE lvc_s_modi.
+
+    LOOP AT er_data_changed->mt_good_cells INTO ls_mod_cells.
+      MODIFY gt_data FROM gt_data INDEX ls_mod_cells-row_id.
+    ENDLOOP.
+  ENDMETHOD.
+
+  METHOD set_layout.
+    rs_layout-zebra = abap_true.
+    rs_layout-cwidth_opt = abap_true.
+    rs_layout-sel_mode = 'A'.
+  ENDMETHOD.
+
+  METHOD set_fieldcat.
+    CALL FUNCTION 'LVC_FIELDCATALOG_MERGE'
+      EXPORTING
+        i_structure_name = 'ZIST_GOALS'
+      CHANGING
+        ct_fieldcat      = rt_fcat.
+  ENDMETHOD.
 ENDCLASS.
 
 TABLES: zist_goals.
 
-DATA: go_alv  TYPE REF TO cl_salv_table,
-      gt_data TYPE TABLE OF zist_goals,
-      go_functions TYPE REF TO cl_salv_functions_list,
-      go_display   TYPE REF TO cl_salv_display_settings,
-      go_columns   TYPE REF TO cl_salv_columns_table,
-      go_column    TYPE REF TO cl_salv_column_table,
-      go_events    TYPE REF TO cl_salv_events_table.
+DATA: go_app TYPE REF TO lcl_app,
+      gt_data TYPE TABLE OF zist_goals.
 
 SELECTION-SCREEN BEGIN OF BLOCK b1 WITH FRAME TITLE TEXT-001.
   PARAMETERS: p_user TYPE sy-uname DEFAULT sy-uname.
@@ -43,7 +137,7 @@ SELECTION-SCREEN END OF BLOCK b1.
 
 START-OF-SELECTION.
   PERFORM get_data.
-  PERFORM display_alv.
+  CALL SCREEN 100.
 
 *&---------------------------------------------------------------------*
 *& Form get_data
@@ -54,38 +148,23 @@ FORM get_data.
 ENDFORM.
 
 *&---------------------------------------------------------------------*
-*& Form display_alv
+*& Module STATUS_0100 OUTPUT
 *&---------------------------------------------------------------------*
-FORM display_alv.
-  TRY.
-      cl_salv_table=>factory(
-        IMPORTING
-          r_salv_table = go_alv
-        CHANGING
-          t_table      = gt_data ).
+MODULE status_0100 OUTPUT.
+  SET PF-STATUS 'MAIN100'.
+  SET TITLEBAR 'TITLE100'.
 
-      go_functions = go_alv->get_functions( ).
-      go_functions->set_all( abap_true ).
-      go_functions->set_default( abap_true ).
+  IF go_app IS NOT BOUND.
+    CREATE OBJECT go_app.
+  ENDIF.
+ENDMODULE.
 
-      go_display = go_alv->get_display_settings( ).
-      go_display->set_striped_pattern( abap_true ).
-
-      go_columns = go_alv->get_columns( ).
-      go_columns->set_optimize( abap_true ).
-
-      LOOP AT go_columns->get( ) INTO go_column.
-        go_column->set_edit( abap_true ).
-      ENDLOOP.
-
-      go_events = go_alv->get_event( ).
-      SET HANDLER lcl_event_handler=>on_user_command FOR go_events.
-
-      go_alv->display( ).
-
-    CATCH cx_salv_msg
-          cx_salv_not_found
-          cx_salv_data_error.
-      MESSAGE 'Error initializing ALV Grid' TYPE 'E'.
-  ENDTRY.
-ENDFORM.
+*&---------------------------------------------------------------------*
+*& Module USER_COMMAND_0100 INPUT
+*&---------------------------------------------------------------------*
+MODULE user_command_0100 INPUT.
+  CASE sy-ucomm.
+    WHEN 'BACK' OR 'EXIT' OR 'CANCEL'.
+      LEAVE TO SCREEN 0.
+  ENDCASE.
+ENDMODULE.
